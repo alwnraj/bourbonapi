@@ -17,5 +17,10 @@
   "bugs": {
     "url": "https://github.com/alwnraj/bourbonapi/issues"
   },
-  "homepage": "https://github.com/alwnraj/bourbonapi#readme"
+  "homepage": "https://github.com/alwnraj/bourbonapi#readme",
+  "dependencies": {
+    "csv": "^6.3.11",
+    "express": "^4.21.2",
+    "fs": "^0.0.1-security"
+  }
 }
