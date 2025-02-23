@@ -5,10 +5,12 @@ const fs = require('fs');
 const app = express();
 app.use(express.json());
 
+let records; // Define records in global scope
+
 try {
-  // Read and parse CSV data (error handling added)
-  const csvData = fs.readFileSync('bourbonlouisville.csv'); // Make sure this file exists!
-  const records = csv.parse(csvData, {
+  // Read and parse CSV data
+  const csvData = fs.readFileSync('bourbonlouisville.csv');
+  records = csv.parse(csvData, {
     skip_empty_lines: true,
     trim: true,
     relax_column_count: true,
@@ -21,7 +23,6 @@ try {
       'Amenitie5', 'ExtraInfo', 'WebsiteLink', 'LogoPNG', 'LogoPNG2'
     ]
   });
-
 
   const bourbons = records.map((row, index) => {
     const hasMilitaryDiscount = (row.ExtraInfo || '').toLowerCase().includes('military discount');
@@ -48,52 +49,127 @@ try {
     };
   });
 
+} catch (error) {
+  console.error("Error loading or parsing CSV:", error);
+  process.exit(1);
+}
 
-  app.post('/recommend', (req, res) => {
-    try {
-      const { bourbonIds } = req.body;
+// Define routes outside of the try-catch block
+app.post('/recommend', (req, res) => {
+  try {
+    console.log('Recommend endpoint hit with body:', req.body);
+    const { bourbonIds } = req.body;
 
-      if (!Array.isArray(bourbonIds)) {
-        return res.status(400).json({ error: 'Array of bourbon IDs required' });
-      }
+    if (!Array.isArray(bourbonIds)) {
+      console.log('Invalid input: bourbonIds is not an array');
+      return res.status(400).json({ error: 'Array of bourbon IDs required' });
+    }
 
-      const selectedTags = [...new Set(bourbons.filter(b => bourbonIds.includes(b.id)).flatMap(b => b.tags))];
+    console.log('Processing bourbon IDs:', bourbonIds);
+    // Get the selected bourbons and explicitly skip row 1 (header)
+    const selectedBourbons = records
+      .filter((b, index) => bourbonIds.includes(index + 1) && index > 0) // Skip first row and match IDs
+      .filter(b => b.Bourbon && b.Bourbon.trim() !== ''); // Additional check for valid bourbon entries
 
-      const distilleryMap = new Map();
+    // Define flavor profile columns
+    const flavorColumns = [
+      'Cereal', 'Roasted', 'Yeasty', 'Feinty', 'Peaty', 'Charred Oak',
+      'Nutty', 'Woody', 'Spicy', 'Winey', 'Citrus', 'Tropical Fruits',
+      'Pome Fruits', 'Stone Fruits', 'Red Berries', 'Dried Fruits',
+      'Floral', 'Grassy'
+    ];
 
-      bourbons.forEach(b => {
-        const key = b.distillery.name;
-        if (!distilleryMap.has(key)) {
-          const matches = b.tags.filter(t => selectedTags.includes(t)).length;
-          distilleryMap.set(key, { ...b.distillery, matchScore: matches });
+    // Log selected bourbons and their flavor profiles
+    console.log('\n=== Selected Bourbons ===');
+    selectedBourbons.forEach(bourbon => {
+      const flavorProfile = {};
+      flavorColumns.forEach(flavor => {
+        flavorProfile[flavor] = Number(bourbon[flavor] || 0);
+      });
+      console.log(`\nBourbon: ${bourbon.Bourbon}`);
+      console.log('Flavor Profile:', JSON.stringify(flavorProfile, null, 2));
+    });
+
+    // Calculate and log average flavor profile
+    const averageProfile = {};
+    flavorColumns.forEach(flavor => {
+      const validValues = selectedBourbons
+        .map(bourbon => Number(bourbon[flavor] || 0))
+        .filter(val => !isNaN(val));
+        
+      averageProfile[flavor] = validValues.length > 0 
+        ? validValues.reduce((acc, val) => acc + val, 0) / validValues.length 
+        : 0;
+    });
+
+    console.log('\n=== Average Flavor Profile ===');
+    console.log(JSON.stringify(averageProfile, null, 2));
+
+    // Calculate similarity scores for all distilleries
+    const distilleryScores = new Map();
+
+    records.forEach((bourbon, index) => {
+      if (bourbonIds.includes(index + 1)) return;
+
+      const distilleryName = bourbon.Distillery?.trim();
+      if (!distilleryName || distilleryScores.has(distilleryName)) return;
+
+      let similarityScore = 0;
+      let validComparisons = 0;
+      const flavorProfile = {};
+      
+      flavorColumns.forEach(flavor => {
+        const bourbonValue = Number(bourbon[flavor] || 0);
+        flavorProfile[flavor] = bourbonValue;
+        if (!isNaN(bourbonValue) && !isNaN(averageProfile[flavor])) {
+          const diff = bourbonValue - averageProfile[flavor];
+          similarityScore += diff * diff;
+          validComparisons++;
         }
       });
 
-      const recommendations = [...distilleryMap.values()]
-        .filter(d => d.matchScore > 0)
-        .sort((a, b) => b.matchScore - a.matchScore)
-        .map(d => ({
-          name: d.name,
-          address: d.address,
-          amenities: d.amenities,
-          website: d.website,
-          militaryDiscount: d.militaryDiscount
-        }));
+      similarityScore = validComparisons > 0 
+        ? 1 / (1 + Math.sqrt(similarityScore / validComparisons))
+        : 0;
 
-      res.json(recommendations);
+      distilleryScores.set(distilleryName, {
+        name: distilleryName,
+        bourbon: bourbon.Bourbon,
+        address: bourbon.Adress?.replace(/\n/g, ', ').trim(),
+        website: bourbon.WebsiteLink?.trim(),
+        amenities: [
+          bourbon.Amenitie1,
+          bourbon.Amenitie2,
+          bourbon.Amenitie3,
+          bourbon.Amenitie4,
+          bourbon.Amenitie5
+        ].filter(a => a && a.trim() !== ''),
+        militaryDiscount: (bourbon.ExtraInfo || '').toLowerCase().includes('military discount'),
+        similarityScore,
+        flavorProfile
+      });
+    });
 
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  });
+    // Get and log top 4 recommendations
+    const recommendations = [...distilleryScores.values()]
+      .sort((a, b) => b.similarityScore - a.similarityScore)
+      .slice(0, 4);
 
-} catch (error) {
-  console.error("Error loading or parsing CSV:", error);
-  process.exit(1); // Exit the process if CSV loading/parsing fails.
-}
+    console.log('\n=== Recommended Distilleries ===');
+    recommendations.forEach(rec => {
+      console.log(`\nDistillery: ${rec.name}`);
+      console.log(`Bourbon: ${rec.bourbon}`);
+      console.log('Similarity Score:', rec.similarityScore.toFixed(4));
+      console.log('Flavor Profile:', JSON.stringify(rec.flavorProfile, null, 2));
+    });
 
+    res.json(recommendations);
 
+  } catch (error) {
+    console.error('Error in recommend endpoint:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 // Start server
 const PORT = 3000;
