@@ -133,6 +133,7 @@ app.post('/recommend', (req, res) => {
         : 0;
 
       distilleryScores.set(distilleryName, {
+        id: index + 1,
         name: distilleryName,
         bourbon: bourbon.Bourbon,
         address: bourbon.Adress?.replace(/\n/g, ', ').trim(),
